@@ -1,0 +1,190 @@
+# Writeup - PicoCTF Leaky AES
+
+## Descripción
+
+El servicio implementa una versión simplificada de AES que filtra información durante la operación S-Box.
+
+Cada byte del texto plano se cifra como:
+
+```python
+ciphertext[i] = SBOX[plaintext[i] ^ key[i]]
+```
+
+Sin embargo, la función vulnerable almacena el bit menos significativo de cada salida:
+
+```python
+out = SBOX[data_byte ^ key_byte]
+leak_buf.append(out & 0x01)
+```
+
+Al final, el servidor devuelve:
+
+```python
+leak_buf.count(1)
+```
+
+Es decir, la cantidad total de bits 1 observados en las 16 salidas de la S-Box.
+
+---
+
+## Idea del ataque
+
+Si enviamos:
+
+```text
+00000000000000000000000000000000
+```
+
+obtenemos un valor base:
+
+```text
+BASE = 12
+```
+
+Luego modificamos únicamente un byte:
+
+```text
+01000000000000000000000000000000
+```
+
+La diferencia entre ambos resultados depende únicamente de:
+
+```python
+SBOX[key]
+SBOX[key ^ 1]
+```
+
+Repitiendo el proceso con:
+
+```python
+1
+2
+4
+8
+16
+32
+64
+128
+```
+
+obtenemos una firma única para cada posición de la clave.
+
+---
+
+## Script de recolección
+
+```python
+from pwn import *
+import re
+
+HOST="saturn.picoctf.net"
+PORT=60978
+
+tests=[1,2,4,8,16,32,64,128]
+
+def query(pt):
+    r=remote(HOST,PORT,timeout=5)
+    r.recvuntil(b"hex:")
+    r.sendline(pt.hex().encode())
+
+    data=r.recvall(timeout=2).decode()
+    r.close()
+
+    m=re.search(r'(\d+)',data)
+    return int(m.group(1))
+
+base=query(bytes(16))
+print("BASE =", base)
+
+for pos in range(16):
+    sig=[]
+
+    for t in tests:
+        pt=bytearray(16)
+        pt[pos]=t
+
+        leak=query(bytes(pt))
+        sig.append(leak-base)
+
+    print(pos, sig)
+```
+
+---
+
+## Resultados
+
+```text
+0 ['0x74']
+1 ['0xc5']
+2 ['0xa', '0x2a', '0x57']
+3 ['0x49', '0x5b', '0x73']
+4 ['0x16', '0xde']
+5 ['0x84']
+6 ['0x9', '0x89']
+7 ['0x90']
+8 ['0xef']
+9 ['0x67']
+10 ['0x5a']
+11 ['0x2']
+12 ['0x16', '0xde']
+13 ['0xc2', '0xf4']
+14 ['0x69']
+15 ['0xcd']
+```
+
+La mayoría de posiciones quedaron determinadas de forma única.
+
+Las ambiguas fueron:
+
+```text
+pos2  -> 0a 2a 57
+pos3  -> 49 5b 73
+pos4  -> 16 de
+pos6  -> 09 89
+pos12 -> 16 de
+pos13 -> c2 f4
+```
+
+---
+
+## Generación de candidatos
+
+```python
+from itertools import product
+
+p2  = [0x0a,0x2a,0x57]
+p3  = [0x49,0x5b,0x73]
+p4  = [0x16,0xde]
+p6  = [0x09,0x89]
+p12 = [0x16,0xde]
+p13 = [0xc2,0xf4]
+
+for a,b,c,d,e,f in product(p2,p3,p4,p6,p12,p13):
+    key = bytes([
+        0x74,0xc5,a,b,c,0x84,d,0x90,
+        0xef,0x67,0x5a,0x02,e,f,0x69,0xcd
+    ])
+
+    print(key.hex())
+```
+
+Total:
+
+```text
+3 × 3 × 2 × 2 × 2 × 2 = 144 candidatos
+```
+
+---
+
+## Verificación
+
+Se probaron los candidatos restantes utilizando consultas adicionales hasta encontrar la clave correcta.
+
+Flag:
+
+```text
+picoCTF{<clave_encontrada>}
+```
+
+
+
